@@ -1,18 +1,17 @@
-import os
 import numpy as np
+# import mujoco_py as mjc
+import warnings
+
 import einops
+import gym
 import imageio
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
-import gym
-import mujoco_py as mjc
-import warnings
-import pdb
+import numpy as np
 
+from diffuser.datasets.d4rl import load_environment
 from .arrays import to_np
 from .video import save_video, save_videos
 
-from diffuser.datasets.d4rl import load_environment
 
 #-----------------------------------------------------------------------------#
 #------------------------------- helper structs ------------------------------#
@@ -95,6 +94,7 @@ class MuJoCoRenderer:
         self.observation_dim = np.prod(self.env.observation_space.shape) - 1
         self.action_dim = np.prod(self.env.action_space.shape)
         try:
+            import mujoco_py as mjc
             self.viewer = mjc.MjRenderContextOffscreen(self.env.sim)
         except:
             print('[ utils/rendering ] Warning: could not initialize offscreen renderer')
@@ -296,6 +296,9 @@ class MazeRenderer:
         colors = plt.cm.jet(np.linspace(0,1,path_length))
         plt.plot(observations[:,1], observations[:,0], c='black', zorder=10)
         plt.scatter(observations[:,1], observations[:,0], c=colors, zorder=20)
+        plt.scatter(observations[0, 1], observations[0, 0], c='black', zorder=30, marker='.')
+        plt.scatter(observations[-1, 1], observations[-1, 0], c='black', zorder=30, marker='o')
+        plt.scatter(4.5/12, 5.5/9, s=80, c='red', zorder=30, marker=(5, 1))
         plt.axis('off')
         plt.title(title)
         img = plot2img(fig, remove_margins=self._remove_margins)

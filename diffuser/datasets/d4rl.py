@@ -39,8 +39,8 @@ def load_environment(name):
     env.name = name
     return env
 
-def get_dataset(env):
-    dataset = env.get_dataset()
+def get_dataset(env, data_path):
+    dataset = env.get_dataset(h5path=data_path)
 
     if 'antmaze' in str(env).lower():
         ## the antmaze-v0 environments have a variety of bugs
@@ -52,7 +52,7 @@ def get_dataset(env):
 
     return dataset
 
-def sequence_dataset(env, preprocess_fn):
+def sequence_dataset(env, preprocess_fn, data_path):
     """
     Returns an iterator through trajectories.
     Args:
@@ -67,7 +67,7 @@ def sequence_dataset(env, preprocess_fn):
             rewards
             terminals
     """
-    dataset = get_dataset(env)
+    dataset = get_dataset(env, data_path)
     dataset = preprocess_fn(dataset)
 
     N = dataset['rewards'].shape[0]
@@ -75,7 +75,8 @@ def sequence_dataset(env, preprocess_fn):
 
     # The newer version of the dataset adds an explicit
     # timeouts field. Keep old method for backwards compatability.
-    use_timeouts = 'timeouts' in dataset
+    # use_timeouts = 'timeouts' in dataset/
+    use_timeouts = False
 
     episode_step = 0
     for i in range(N):
@@ -83,7 +84,7 @@ def sequence_dataset(env, preprocess_fn):
         if use_timeouts:
             final_timestep = dataset['timeouts'][i]
         else:
-            final_timestep = (episode_step == env._max_episode_steps - 1)
+            final_timestep = (episode_step == env.max_episode_steps - 1)
 
         for k in dataset:
             if 'metadata' in k: continue

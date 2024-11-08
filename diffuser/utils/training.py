@@ -1,23 +1,27 @@
-import os
 import copy
+import os
+
+import einops
 import numpy as np
 import torch
-import einops
-import pdb
+import tqdm
 
 from .arrays import batch_to_device, to_np, to_device, apply_dict
-from .timer import Timer
 from .cloud import sync_logs
+from .timer import Timer
+
 
 def cycle(dl):
     while True:
         for data in dl:
             yield data
 
+
 class EMA():
     '''
         empirical moving average
     '''
+
     def __init__(self, beta):
         super().__init__()
         self.beta = beta
@@ -32,27 +36,30 @@ class EMA():
             return new
         return old * self.beta + (1 - self.beta) * new
 
+
 class Trainer(object):
     def __init__(
-        self,
-        diffusion_model,
-        dataset,
-        renderer,
-        ema_decay=0.995,
-        train_batch_size=32,
-        train_lr=2e-5,
-        gradient_accumulate_every=2,
-        step_start_ema=2000,
-        update_ema_every=10,
-        log_freq=100,
-        sample_freq=1000,
-        save_freq=1000,
-        label_freq=100000,
-        save_parallel=False,
-        results_folder='./results',
-        n_reference=8,
-        n_samples=2,
-        bucket=None,
+            self,
+            diffusion_model,
+            dataset,
+            renderer,
+            ema_decay=0.995,
+            train_batch_size=32,
+            train_lr=2e-5,
+            gradient_accumulate_every=2,
+            step_start_ema=2000,
+            update_ema_every=10,
+            log_freq=100,
+            sample_freq=1000,
+            save_freq=1000,
+            label_freq=100000,
+            save_parallel=False,
+            results_folder='./results',
+            n_reference=8,
+            n_samples=2,
+            n_points=2,
+            bucket=None,
+            device=None
     ):
         super().__init__()
         self.model = diffusion_model
@@ -75,7 +82,7 @@ class Trainer(object):
             self.dataset, batch_size=train_batch_size, num_workers=1, shuffle=True, pin_memory=True
         ))
         self.dataloader_vis = cycle(torch.utils.data.DataLoader(
-            self.dataset, batch_size=1, num_workers=0, shuffle=True, pin_memory=True
+            self.dataset, batch_size=n_points, num_workers=0, shuffle=True, pin_memory=True
         ))
         self.renderer = renderer
         self.optimizer = torch.optim.Adam(diffusion_model.parameters(), lr=train_lr)
@@ -84,6 +91,9 @@ class Trainer(object):
         self.bucket = bucket
         self.n_reference = n_reference
         self.n_samples = n_samples
+        self.n_points = n_points
+
+        self.device = device
 
         self.reset_parameters()
         self.step = 0
@@ -97,17 +107,17 @@ class Trainer(object):
             return
         self.ema.update_model_average(self.ema_model, self.model)
 
-    #-----------------------------------------------------------------------------#
-    #------------------------------------ api ------------------------------------#
-    #-----------------------------------------------------------------------------#
+    # -----------------------------------------------------------------------------#
+    # ------------------------------------ api ------------------------------------#
+    # -----------------------------------------------------------------------------#
 
     def train(self, n_train_steps):
 
         timer = Timer()
-        for step in range(n_train_steps):
+        for step in tqdm.trange(n_train_steps):
             for i in range(self.gradient_accumulate_every):
                 batch = next(self.dataloader)
-                batch = batch_to_device(batch)
+                batch = batch_to_device(batch, self.device)
 
                 loss, infos = self.model.loss(*batch)
                 loss = loss / self.gradient_accumulate_every
@@ -131,7 +141,8 @@ class Trainer(object):
                 self.render_reference(self.n_reference)
 
             if self.sample_freq and self.step % self.sample_freq == 0:
-                self.render_samples(n_samples=self.n_samples)
+                self.evaluate(batch_size=self.n_points, n_samples=self.n_samples)
+                # self.render_samples(n_samples=self.n_samples, render=True)
 
             self.step += 1
 
@@ -162,9 +173,9 @@ class Trainer(object):
         self.model.load_state_dict(data['model'])
         self.ema_model.load_state_dict(data['ema'])
 
-    #-----------------------------------------------------------------------------#
-    #--------------------------------- rendering ---------------------------------#
-    #-----------------------------------------------------------------------------#
+    # -----------------------------------------------------------------------------#
+    # --------------------------------- rendering ---------------------------------#
+    # -----------------------------------------------------------------------------#
 
     def render_reference(self, batch_size=10):
         '''
@@ -180,7 +191,7 @@ class Trainer(object):
 
         ## get trajectories and condition at t=0 from batch
         trajectories = to_np(batch.trajectories)
-        conditions = to_np(batch.conditions[0])[:,None]
+        conditions = to_np(batch.conditions[0])[:, None]
 
         ## [ batch_size x horizon x observation_dim ]
         normed_observations = trajectories[:, :, self.dataset.action_dim:]
@@ -198,15 +209,17 @@ class Trainer(object):
         savepath = os.path.join(self.logdir, f'_sample-reference.png')
         self.renderer.composite(savepath, observations)
 
-    def render_samples(self, batch_size=2, n_samples=2):
+    def render_samples(self, batch_size=2, n_samples=2, render=False):
         '''
             renders samples from (ema) diffusion model
         '''
+        batch = next(self.dataloader_vis)
+        all_obs = []
+        all_acts = []
         for i in range(batch_size):
-
             ## get a single datapoint
-            batch = self.dataloader_vis.__next__()
-            conditions = to_device(batch.conditions, 'cuda:0')
+            batch_conditions = {k: v[i][None, :] for k, v in batch.conditions.items()}
+            conditions = to_device(batch_conditions, self.device)
 
             ## repeat each item in conditions `n_samples` times
             conditions = apply_dict(
@@ -216,32 +229,65 @@ class Trainer(object):
             )
 
             ## [ n_samples x horizon x (action_dim + observation_dim) ]
-            samples = self.ema_model.conditional_sample(conditions)
+            samples = self.ema_model.conditional_sample(conditions, verbose=False)
             samples = to_np(samples)
 
             ## [ n_samples x horizon x observation_dim ]
             normed_observations = samples[:, :, self.dataset.action_dim:]
+            normed_actions = samples[:, :, :self.dataset.action_dim]
 
             # [ 1 x 1 x observation_dim ]
-            normed_conditions = to_np(batch.conditions[0])[:,None]
+            normed_conditions = to_np(batch_conditions[0])[:, None]
 
             # from diffusion.datasets.preprocessing import blocks_cumsum_quat
             # observations = conditions + blocks_cumsum_quat(deltas)
             # observations = conditions + deltas.cumsum(axis=1)
 
-            ## [ n_samples x (horizon + 1) x observation_dim ]
-            normed_observations = np.concatenate([
-                np.repeat(normed_conditions, n_samples, axis=0),
-                normed_observations
-            ], axis=1)
+            # ## [ n_samples x (horizon + 1) x observation_dim ]
+            # normed_observations = np.concatenate([
+            #     np.repeat(normed_conditions, n_samples, axis=0),
+            #     normed_observations
+            # ], axis=1)
 
             ## [ n_samples x (horizon + 1) x observation_dim ]
             observations = self.dataset.normalizer.unnormalize(normed_observations, 'observations')
+            ## [ n_samples x (horizon + 1) x action_dim ]
+            actions = self.dataset.normalizer.unnormalize(normed_actions, 'actions')
+
+            all_obs.append(observations)
+            all_acts.append(actions)
 
             #### @TODO: remove block-stacking specific stuff
             # from diffusion.datasets.preprocessing import blocks_euler_to_quat, blocks_add_kuka
             # observations = blocks_add_kuka(observations)
             ####
 
-            savepath = os.path.join(self.logdir, f'sample-{self.step}-{i}.png')
-            self.renderer.composite(savepath, observations)
+            if render:
+                savepath = os.path.join(self.logdir, f'sample-{self.step}-{i}.png')
+                self.renderer.composite(savepath, observations)
+
+        return batch, np.array(all_obs), np.array(all_acts)  # shape: (batch, n_samples, horizon+1, obs/act_dim)
+
+    def evaluate(self, batch_size=2, n_samples=2):
+        batch, plan_observations, plan_actions = self.render_samples(batch_size, n_samples, render=False)
+
+        obs = batch.trajectories[..., self.dataset.action_dim:]  # shape: (batch, horizon, obs)
+        obs = to_np(self.dataset.normalizer.unnormalize(obs, 'observations'))
+        acts = batch.trajectories[..., :self.dataset.action_dim]  # shape: (batch, horizon, act)
+        acts = to_np(self.dataset.normalizer.unnormalize(acts, 'actions'))
+
+        obs_se = (plan_observations - obs[:, None]) ** 2  # shape: (batch, n_samples, horizon, act)
+        act_se = (plan_actions - acts[:, None]) ** 2  # shape: (batch, n_samples, horizon, act)
+
+        print(f'{self.step}: '
+              f'obs_mse: {np.mean(obs_se):8.4f} | '
+              f'act_mse: {np.mean(act_se):8.4f} | '
+              f'min_obs_mse: {min(np.mean(obs_se, axis=(0, 2, 3))):8.4f} | '
+              f'min_act_mse: {min(np.mean(act_se, axis=(0, 2, 3))):8.4f}')
+
+        for i in range(1): # batch_size
+            savepath = os.path.join(self.logdir, f'eval-{self.step}-{i}-gt.png')
+            self.renderer.composite(savepath, obs[None, i], ncol=1)
+
+            savepath = os.path.join(self.logdir, f'eval-{self.step}-{i}-plan.png')
+            self.renderer.composite(savepath, plan_observations[i])

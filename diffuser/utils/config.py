@@ -2,6 +2,8 @@ import os
 import collections
 import importlib
 import pickle
+from typing import Mapping
+
 
 def import_class(_class):
     if type(_class) is not str: return _class
@@ -18,7 +20,7 @@ def import_class(_class):
     print(f'[ utils/config ] Imported {repo_name}.{module_name}:{class_name}')
     return _class
 
-class Config(collections.Mapping):
+class Config(Mapping):
 
     def __init__(self, _class, verbose=True, savepath=None, device=None, **kwargs):
         self._class = import_class(_class)

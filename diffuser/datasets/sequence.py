@@ -1,31 +1,40 @@
 from collections import namedtuple
+
 import numpy as np
 import torch
-import pdb
 
-from .preprocessing import get_preprocess_fn
+from .buffer import ReplayBuffer
 from .d4rl import load_environment, sequence_dataset
 from .normalization import DatasetNormalizer
-from .buffer import ReplayBuffer
+from .preprocessing import get_preprocess_fn
 
 Batch = namedtuple('Batch', 'trajectories conditions')
 ValueBatch = namedtuple('ValueBatch', 'trajectories conditions values')
 
+
 class SequenceDataset(torch.utils.data.Dataset):
 
     def __init__(self, env='hopper-medium-replay', horizon=64,
-        normalizer='LimitsNormalizer', preprocess_fns=[], max_path_length=1000,
-        max_n_episodes=10000, termination_penalty=0, use_padding=True):
-        self.preprocess_fn = get_preprocess_fn(preprocess_fns, env)
+                 normalizer='LimitsNormalizer', preprocess_fns=[], max_path_length=1000,
+                 max_n_episodes=10000, termination_penalty=0, use_padding=True, data_path=None):
+
         self.env = env = load_environment(env)
+        self.env.reset_target = False
+        self.env.reset(seed=171717)
+        # self.env.set_target()
+        self.env._target = np.array([5, 4]) # fixed goal
+        self.preprocess_fn = get_preprocess_fn(preprocess_fns, env)
         self.horizon = horizon
         self.max_path_length = max_path_length
         self.use_padding = use_padding
-        itr = sequence_dataset(env, self.preprocess_fn)
+        itr = sequence_dataset(env, self.preprocess_fn, data_path)
 
         fields = ReplayBuffer(max_n_episodes, max_path_length, termination_penalty)
         for i, episode in enumerate(itr):
+            if i >= max_n_episodes:
+                break
             fields.add_path(episode)
+
         fields.finalize()
 
         self.normalizer = DatasetNormalizer(fields, normalizer, path_lengths=fields['path_lengths'])
@@ -47,7 +56,7 @@ class SequenceDataset(torch.utils.data.Dataset):
             normalize fields that will be predicted by the diffusion model
         '''
         for key in keys:
-            array = self.fields[key].reshape(self.n_episodes*self.max_path_length, -1)
+            array = self.fields[key].reshape(self.n_episodes * self.max_path_length, -1)
             normed = self.normalizer(array, key)
             self.fields[f'normed_{key}'] = normed.reshape(self.n_episodes, self.max_path_length, -1)
 
@@ -87,6 +96,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         batch = Batch(trajectories, conditions)
         return batch
 
+
 class GoalDataset(SequenceDataset):
 
     def get_conditions(self, observations):
@@ -98,6 +108,7 @@ class GoalDataset(SequenceDataset):
             self.horizon - 1: observations[-1],
         }
 
+
 class ValueDataset(SequenceDataset):
     '''
         adds a value field to the datapoints for training the value function
@@ -106,7 +117,7 @@ class ValueDataset(SequenceDataset):
     def __init__(self, *args, discount=0.99, **kwargs):
         super().__init__(*args, **kwargs)
         self.discount = discount
-        self.discounts = self.discount ** np.arange(self.max_path_length)[:,None]
+        self.discounts = self.discount ** np.arange(self.max_path_length)[:, None]
 
     def __getitem__(self, idx):
         batch = super().__getitem__(idx)

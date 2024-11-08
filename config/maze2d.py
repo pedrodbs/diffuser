@@ -1,8 +1,6 @@
-import socket
-
 from diffuser.utils import watch
 
-#------------------------ base ------------------------#
+# ------------------------ base ------------------------#
 
 ## automatically make experiment names for planning
 ## by labelling folders with these args
@@ -12,7 +10,6 @@ diffusion_args_to_watch = [
     ('horizon', 'H'),
     ('n_diffusion_steps', 'T'),
 ]
-
 
 plan_args_to_watch = [
     ('prefix', ''),
@@ -38,12 +35,12 @@ base = {
         'action_weight': 1,
         'loss_weights': None,
         'loss_discount': 1,
-        'predict_epsilon': False,
+        'predict_epsilon': True,  # False,
         'dim_mults': (1, 4, 8),
         'renderer': 'utils.Maze2dRenderer',
 
         ## dataset
-        'loader': 'datasets.GoalDataset',
+        'loader': 'datasets.SequenceDataset', #'datasets.GoalDataset',
         'termination_penalty': None,
         'normalizer': 'LimitsNormalizer',
         'preprocess_fns': ['maze2d_set_terminals'],
@@ -64,9 +61,10 @@ base = {
         'learning_rate': 2e-4,
         'gradient_accumulate_every': 2,
         'ema_decay': 0.995,
-        'save_freq': 1000,
-        'sample_freq': 1000,
-        'n_saves': 50,
+        'save_freq': 100000,  # 1000,
+        'sample_freq': 10000,  # 1000,
+        'log_freq': 1000,
+        'n_saves': 10,  # 50,
         'save_parallel': False,
         'n_reference': 50,
         'n_samples': 10,
@@ -99,7 +97,7 @@ base = {
 
 }
 
-#------------------------ overrides ------------------------#
+# ------------------------ overrides ------------------------#
 
 '''
     maze2d maze episode steps:
@@ -121,11 +119,12 @@ maze2d_umaze_v1 = {
 
 maze2d_large_v1 = {
     'diffusion': {
-        'horizon': 384,
+        'data_path': 'output/data/diffuser/maze2d-large-v1.hdf5',
+        'horizon': 128, #384,
         'n_diffusion_steps': 256,
     },
     'plan': {
-        'horizon': 384,
+        'horizon': 128, #384,
         'n_diffusion_steps': 256,
     },
 }

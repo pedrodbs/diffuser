@@ -10,14 +10,17 @@ from .d4rl import load_environment
 #-------------------------------- general api --------------------------------#
 #-----------------------------------------------------------------------------#
 
-def compose(*fns):
+class Composer(object):
+    def __init__(self, fns):
+        self.fns = fns
 
-    def _fn(x):
-        for fn in fns:
+    def _fn(self, x):
+        for fn in self.fns:
             x = fn(x)
         return x
 
-    return _fn
+def compose(*fns):
+    return Composer(fns)._fn
 
 def get_preprocess_fn(fn_names, env):
     fns = [eval(name)(env) for name in fn_names]
@@ -55,17 +58,17 @@ def add_deltas(env):
 
     return _fn
 
+class Maze2dTerminalSetter(object):
+    def __init__(self, env):
+        self.env = env
+        self.goal = np.array(env._target)
+        self.threshold = 0.1 #0.5
 
-def maze2d_set_terminals(env):
-    env = load_environment(env) if type(env) == str else env
-    goal = np.array(env._target)
-    threshold = 0.5
-
-    def _fn(dataset):
+    def _fn(self, dataset):
         xy = dataset['observations'][:,:2]
-        distances = np.linalg.norm(xy - goal, axis=-1)
-        at_goal = distances < threshold
-        timeouts = np.zeros_like(dataset['timeouts'])
+        distances = np.linalg.norm(xy - self.goal, axis=-1)
+        at_goal = distances < self.threshold
+        timeouts = np.zeros_like(dataset['timeouts'] if 'timeouts' in dataset else dataset['terminals'])
 
         ## timeout at time t iff
         ##      at goal at time t and
@@ -76,14 +79,18 @@ def maze2d_set_terminals(env):
         path_lengths = timeout_steps[1:] - timeout_steps[:-1]
 
         print(
-            f'[ utils/preprocessing ] Segmented {env.name} | {len(path_lengths)} paths | '
+            f'[ utils/preprocessing ] Segmented {self.env.name} | {len(path_lengths)} paths | '
             f'min length: {path_lengths.min()} | max length: {path_lengths.max()}'
         )
 
         dataset['timeouts'] = timeouts
         return dataset
 
-    return _fn
+
+
+def maze2d_set_terminals(env):
+    env = load_environment(env) if type(env) == str else env
+    return Maze2dTerminalSetter(env)._fn
 
 
 #-------------------------- block-stacking --------------------------#
